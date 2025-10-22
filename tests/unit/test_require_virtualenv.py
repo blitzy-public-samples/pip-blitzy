@@ -42,9 +42,12 @@ def mock_not_in_virtualenv(monkeypatch: pytest.MonkeyPatch) -> None:
     Mocks running_under_virtualenv() to return False, simulating execution
     outside a virtualenv without modifying sys.prefix or environment variables
     (which could corrupt the test runner's environment).
+    
+    Note: We patch where the function is USED (in base_command), not where
+    it's defined (in utils.virtualenv), per Python's import semantics.
     """
     monkeypatch.setattr(
-        "pip._internal.utils.virtualenv.running_under_virtualenv",
+        "pip._internal.cli.base_command.running_under_virtualenv",
         lambda: False
     )
 
@@ -56,9 +59,12 @@ def mock_in_virtualenv(monkeypatch: pytest.MonkeyPatch) -> None:
     
     Mocks running_under_virtualenv() to return True, simulating execution
     inside a virtualenv.
+    
+    Note: We patch where the function is USED (in base_command), not where
+    it's defined (in utils.virtualenv), per Python's import semantics.
     """
     monkeypatch.setattr(
-        "pip._internal.utils.virtualenv.running_under_virtualenv",
+        "pip._internal.cli.base_command.running_under_virtualenv",
         lambda: True
     )
 
@@ -170,11 +176,11 @@ class TestRequireVirtualenvTruthMatrix:
         self,
         mock_not_in_virtualenv: None,
         fake_command_enforcing: FakeCommandEnforcing,
-        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """
         Test: Not in venv, --require-virtualenv set, command enforces.
-        Expected: EXIT with code 3 + CRITICAL log message
+        Expected: EXIT with code 3 + error message to stderr
         
         This is the CRITICAL enforcement path that prevents installations
         outside virtualenvs when the flag is explicitly set.
@@ -185,13 +191,9 @@ class TestRequireVirtualenvTruthMatrix:
         # Verify exit code is VIRTUALENV_NOT_FOUND (3)
         assert exc_info.value.code == VIRTUALENV_NOT_FOUND
         
-        # Verify critical error message was logged
-        assert "Could not find an activated virtualenv (required)." in caplog.text
-        
-        # Verify log level is CRITICAL
-        assert any(
-            record.levelname == "CRITICAL" for record in caplog.records
-        )
+        # Verify error message was written to stderr
+        captured = capsys.readouterr()
+        assert "Could not find an activated virtualenv (required)." in captured.err
     
     def test_no_venv_with_requirement_with_ignore(
         self,
@@ -291,10 +293,10 @@ class TestRequireVirtualenvErrorHandling:
         self,
         mock_not_in_virtualenv: None,
         fake_command_enforcing: FakeCommandEnforcing,
-        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """
-        Test that the exact critical error message is logged.
+        Test that the exact error message is logged to stderr.
         
         The message must clearly indicate that a virtualenv is required
         and could not be found.
@@ -302,22 +304,16 @@ class TestRequireVirtualenvErrorHandling:
         with pytest.raises(SystemExit):
             fake_command_enforcing.main(["--require-virtualenv"])
         
-        # Check exact message content
+        # Check exact message content in stderr
+        captured = capsys.readouterr()
         expected_message = "Could not find an activated virtualenv (required)."
-        assert expected_message in caplog.text
-        
-        # Verify it's logged at CRITICAL level
-        critical_messages = [
-            record.message for record in caplog.records 
-            if record.levelname == "CRITICAL"
-        ]
-        assert any(expected_message in msg for msg in critical_messages)
+        assert expected_message in captured.err
     
     def test_no_error_when_venv_present(
         self,
         mock_in_virtualenv: None,
         fake_command_enforcing: FakeCommandEnforcing,
-        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """
         Test that no error occurs when virtualenv requirement is satisfied.
@@ -329,12 +325,9 @@ class TestRequireVirtualenvErrorHandling:
         
         assert result == SUCCESS
         
-        # Verify no critical errors were logged
-        critical_messages = [
-            record for record in caplog.records 
-            if record.levelname == "CRITICAL"
-        ]
-        assert len(critical_messages) == 0
+        # Verify no error about virtualenv was written to stderr
+        captured = capsys.readouterr()
+        assert "Could not find an activated virtualenv" not in captured.err
     
     def test_sys_exit_called_with_correct_code(
         self,
@@ -589,7 +582,7 @@ class TestRequireVirtualenvOptionPrecedence:
         mock_not_in_virtualenv: None,
         fake_command_enforcing: FakeCommandEnforcing,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """
         Test that PIP_REQUIRE_VIRTUALENV=1 enforces the requirement.
@@ -603,7 +596,10 @@ class TestRequireVirtualenvOptionPrecedence:
             fake_command_enforcing.main([])
         
         assert exc_info.value.code == VIRTUALENV_NOT_FOUND
-        assert "Could not find an activated virtualenv" in caplog.text
+        
+        # Verify error message in stderr
+        captured = capsys.readouterr()
+        assert "Could not find an activated virtualenv" in captured.err
     
     def test_env_var_false_disables_requirement(
         self,
